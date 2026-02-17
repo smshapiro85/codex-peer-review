@@ -16,6 +16,8 @@ tools:
   - Bash(mcp-cli *)
   - Bash(tee *)
   - Bash(cat *)
+  - Bash(sleep *)
+  - Bash(wc *)
   - Read
   - WebSearch
   - TaskCreate
@@ -73,35 +75,32 @@ if ! command -v codex &>/dev/null; then
 fi
 ```
 
-### Step 2: Choose the Right Codex Command
+### Step 2: Run Codex with Progress Monitoring
 
-Update task: `activeForm: "Getting Codex perspective..."`
+Update task: `activeForm: "Launching Codex review..."`
 
-## DEFAULT TO `codex exec` - ALMOST ALWAYS THE RIGHT CHOICE
+#### Command Selection
 
-`codex exec` is the preferred command for nearly all peer review scenarios. It gives you precise control over what gets analyzed and avoids runaway reviews of entire branches.
+**DEFAULT TO `codex exec`** for almost all peer review scenarios. It gives precise control over what gets analyzed.
 
-**Only use `codex review` when:**
-- User explicitly says "review the entire branch" → `--base`
-- User explicitly says "review all uncommitted changes" → `--uncommitted`
-- User explicitly says "review this commit" → `--commit <sha>`
+**Only use `codex review` when** user explicitly requests:
+- "review the entire branch" → `codex review --base [branch]`
+- "review all uncommitted changes" → `codex review --uncommitted`
+- "review this commit" → `codex review --commit [sha]`
 
-**Use `codex exec` for everything else**, including:
-- Reviewing specific files or functions
-- Validating designs or architecture decisions
-- Checking specific code for bugs or issues
-- Cross-checking Claude's analysis
-- Any focused or scoped review request
+**Use `codex exec` for everything else** (specific files, designs, architecture, cross-checking).
 
-**IMPORTANT:** Always use heredoc stdin for prompts to avoid shell escaping issues and permission prompts.
+**IMPORTANT:** Always use heredoc stdin for `codex exec` prompts to avoid shell escaping issues.
 
 ---
 
-**For almost all reviews (DEFAULT):**
+#### Background Execution with Live Progress
+
+**Always** add `--json` and pipe through `tee` to a temp file. **Always** set `run_in_background: true` on the Bash tool call so you can poll for progress.
+
+**For `codex exec` (default):**
 ```bash
-# Use codex exec with heredoc - prompt goes directly to stdin
-# No temp files needed, no extra permissions required
-codex exec <<'EOF'
+codex exec --json <<'EOF' 2>&1 | tee /tmp/codex_peer_review.json
 Review the following code/changes for:
 - [Specific concern from user's request]
 - Code quality and potential bugs
@@ -111,29 +110,73 @@ Review the following code/changes for:
 EOF
 ```
 
----
-
-## `codex review` - ONLY when user explicitly requests these specific scopes:
-
-**"Review all my uncommitted changes":**
+**For `codex review`:**
 ```bash
-codex review --uncommitted
+codex review --base [branch] --json 2>&1 | tee /tmp/codex_peer_review.json
 ```
 
-**"Review the entire feature branch":**
+#### Progress Polling Loop
+
+After launching the background command, poll the output file to provide live status updates. **Repeat this cycle until the background task completes:**
+
+1. **Pause between polls:**
 ```bash
-codex review --base [branch]
+sleep 15
 ```
 
-**"Review this specific commit":**
+2. **Check event count:**
 ```bash
-codex review --commit [sha]
+wc -l < /tmp/codex_peer_review.json 2>/dev/null || echo "0"
 ```
 
-**Why heredoc stdin?**
-- No temp file permissions needed (`mktemp`, `cat`)
-- No shell escaping issues with quotes, newlines, or special characters
-- Single command = single permission prompt
+3. **Get a smart progress summary** using a cheap model to summarize what Codex has done so far (avoids reading raw JSONL into context):
+```bash
+codex exec -m gpt-5.3-codex-spark -o /tmp/codex_progress_summary.txt "In under 20 words, summarize the progress of this code review. What files were analyzed? Any issues found yet?" < /tmp/codex_peer_review.json
+```
+```bash
+cat /tmp/codex_progress_summary.txt
+```
+
+4. **Update the task spinner** with the summary:
+```
+TaskUpdate:
+  taskId: [task ID]
+  activeForm: "[summary from progress file] (N events)"
+```
+
+5. **Check if done** — use the `Read` tool on the `output_file` path returned by the background Bash call. If it shows the task completed, stop polling.
+
+**Aim for 3-8 poll cycles.** If the review runs longer than 2 minutes, widen the sleep to 30 seconds. You can skip the smart summary on some cycles and just report event count to save cost.
+
+#### Reading Results
+
+When the background task completes, **do NOT read the raw JSONL into context** — it can be enormous and will pollute the conversation. Instead, use a cheap model to extract and summarize the findings:
+
+```bash
+codex exec -m gpt-5.3-codex-spark -o /tmp/codex_final_summary.txt <<'SUMMARY_EOF' < /tmp/codex_peer_review.json
+Extract the code review findings from this JSONL stream.
+Return a structured summary:
+1. Files reviewed
+2. Issues found (with severity)
+3. Suggestions and recommendations
+4. Overall assessment
+Be thorough but concise — under 500 words.
+SUMMARY_EOF
+```
+
+Then read only the summary:
+```bash
+cat /tmp/codex_final_summary.txt
+```
+
+Use this summary for comparison in Step 3. If you need to drill into a specific finding later, you can ask gpt-5.3-codex-spark a targeted follow-up question against the same JSONL file.
+
+**Why this pattern?**
+- `--json` streams JSONL events as Codex works, enabling progress tracking
+- `tee` saves to a pollable file while the background task captures full output
+- `run_in_background` frees the agent to update the user while Codex runs
+- `gpt-5.3-codex-spark` summarizes JSONL cheaply so raw output never enters the Claude context
+- Heredoc stdin avoids shell escaping issues (for `codex exec`)
 
 ### Step 3: Compare Results
 
