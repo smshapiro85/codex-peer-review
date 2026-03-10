@@ -68,7 +68,7 @@ To run without confirmation prompts on every bash command, add the following to 
 ```json
 {
   "permissions": {
-    "allowedTools": [
+    "allow": [
       "Bash(mktemp /tmp/codex_*)",
       "Bash(timeout *)",
       "Bash(codex exec*)",
