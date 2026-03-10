@@ -1,12 +1,12 @@
 {
   "name": "codex-peer-review",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Peer validation system using OpenAI Codex CLI. Validates Claude's designs and code reviews through structured discussion before presenting to user.",
   "author": {
-    "name": "jcputney",
-    "url": "https://github.com/jcputney"
+    "name": "smshapiro85",
+    "url": "https://github.com/smshapiro85"
   },
-  "repository": "https://github.com/jcputney/agent-peer-review",
+  "repository": "https://github.com/smshapiro85/codex-peer-review",
   "license": "MIT",
   "keywords": ["peer-review", "code-review", "validation", "codex", "ai-collaboration"],
   "commands": ["./commands/codex-peer-review.md", "./commands/review-plan.md"],
