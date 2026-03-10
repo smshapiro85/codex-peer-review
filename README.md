@@ -31,8 +31,8 @@ Forked from [jcputney/agent-peer-review](https://github.com/jcputney/agent-peer-
 ## Installation
 
 ```bash
-/plugin marketplace add <this-repo>
-/plugin install codex-peer-review
+/plugin marketplace add smshapiro85/codex-peer-review
+/plugin install codex-peer-review@agent-peer-review-marketplace
 ```
 
 ### Prerequisites
