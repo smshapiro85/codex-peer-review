@@ -80,6 +80,7 @@ To run without confirmation prompts on every bash command, add the following to 
       "Bash(sleep *)",
       "Bash(wc -l *)",
       "Bash(rm -f /tmp/codex_*)",
+      "Bash(rm /tmp/codex_*)",
       "Bash(head *)",
       "Bash(git diff*)",
       "Bash(git show*)",

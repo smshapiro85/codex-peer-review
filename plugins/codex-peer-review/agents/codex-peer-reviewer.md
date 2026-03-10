@@ -17,6 +17,7 @@ tools:
   - Bash(sleep *)
   - Bash(wc -l *)
   - Bash(rm -f /tmp/codex_*)
+  - Bash(rm /tmp/codex_*)
   - Bash(head *)
   - Bash(git diff*)
   - Bash(git show*)
