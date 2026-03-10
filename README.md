@@ -28,6 +28,27 @@ Forked from [jcputney/agent-peer-review](https://github.com/jcputney/agent-peer-
 - **Red flag checklist** — 9 warning signs (e.g. "this doesn't need validation", "security issue is probably fine") that trigger self-correction
 - **Advisory hooks, not enforcing** — slimmed down from aggressive hooks on every tool call to keyword-gated reminders that respect user autonomy
 
+## Usage
+
+### Review Code Changes
+
+```
+/codex-peer-review                  # Interactive — asks what to review
+/codex-peer-review --base main      # Review changes against a branch
+/codex-peer-review --uncommitted    # Review staged/unstaged changes only
+/codex-peer-review --commit abc123  # Review a specific commit
+/codex-peer-review <question>       # Validate a broad technical question
+```
+
+### Review a Plan from the Current Conversation
+
+```
+/review-plan                        # Auto-extract the most recent plan and send to Codex
+/review-plan security               # Review the plan with a specific focus area
+```
+
+Use `/review-plan` after Claude generates an implementation plan, architecture design, or refactoring strategy. It extracts the most recent plan from your conversation context, sends it directly to Codex for review (skipping Claude opinion formation), and returns Codex's findings on completeness, ordering, risk, alternatives, and feasibility.
+
 ## Installation
 
 ```bash

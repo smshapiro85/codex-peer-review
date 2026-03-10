@@ -39,8 +39,8 @@ Peer validation system using OpenAI Codex CLI. Validates Claude's designs and co
 ### Mode 3: Review Plan from Conversation
 
 ```
-/codex-peer-review:review-plan          # Auto-extract and review the most recent plan from conversation
-/codex-peer-review:review-plan [focus]  # Review the plan with a specific focus area
+/review-plan          # Auto-extract and review the most recent plan from conversation
+/review-plan [focus]  # Review the plan with a specific focus area
 ```
 
 **Behavior:** Extracts a plan/design that Claude generated during the current session, embeds it fully in the subagent dispatch, and sends it to Codex for validation. Use this after Claude generates an implementation plan, architecture design, or refactoring strategy.

@@ -10,8 +10,8 @@ You have been explicitly asked to send a plan, design, or recommendation from th
 ## Parse Arguments
 
 Check for arguments in the command:
-- `/codex-peer-review:review-plan` - Auto-detect and extract the most recent plan from conversation
-- `/codex-peer-review:review-plan <focus>` - Extract the plan, with a specific focus area for the review
+- `/review-plan` - Auto-detect and extract the most recent plan from conversation
+- `/review-plan <focus>` - Extract the plan, with a specific focus area for the review
 
 ## Step 1: Extract the Plan from Conversation Context
 
