@@ -1,15 +1,15 @@
 #!/bin/bash
 # UserPromptSubmit hook: Identify requests likely needing peer review
 
-# Read hook context from stdin (JSON)
-INPUT=$(cat)
-
-# Extract the user's prompt from JSON input
-# Try jq first, fall back to grep/cut
-if command -v jq &>/dev/null; then
+# Try env var first (Claude Code 4.x+), fall back to stdin JSON
+if [ -n "$CLAUDE_USER_PROMPT" ]; then
+  USER_PROMPT="$CLAUDE_USER_PROMPT"
+elif command -v jq &>/dev/null; then
+  INPUT=$(cat)
   USER_PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty' 2>/dev/null)
 else
-  USER_PROMPT=$(echo "$INPUT" | grep -o '"prompt":"[^"]*"' | head -1 | cut -d'"' -f4)
+  # jq unavailable and no env var - safe default: always trigger reminder
+  USER_PROMPT="trigger"
 fi
 
 # Keywords that suggest peer review would be valuable
