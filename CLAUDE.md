@@ -46,6 +46,12 @@ plugins/
 | Validating designs/plans | `codex exec "..."` |
 | Answering questions | `codex exec "..."` |
 
+## Versioning
+
+When pushing changes to the remote, **always bump the version** before pushing. Increment the patch version for fixes, minor version for new features or commands. Update the version in both:
+- `.claude-plugin/marketplace.json` (top-level `version` AND the plugin entry `version`)
+- `plugins/codex-peer-review/.claude-plugin/plugin.json`
+
 ## Testing Changes
 
 1. Install the plugin locally: `/plugin add /path/to/codex-peer-review`
