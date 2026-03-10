@@ -6,19 +6,17 @@ color: cyan
 skills:
   - codex-peer-review
 tools:
+  - Bash(mktemp /tmp/codex_*)
+  - Bash(timeout *)
   - Bash(codex exec*)
   - Bash(codex review*)
   - Bash(command -v codex*)
   - Bash(command -v jq*)
   - Bash(jq *)
-  - Bash(grep *)
-  - Bash(tee *)
-  - Bash(cat *)
+  - Bash(cat /tmp/codex_*)
   - Bash(sleep *)
-  - Bash(wc *)
-  - Bash(mktemp*)
-  - Bash(rm /tmp/codex_*)
-  - Bash(timeout *)
+  - Bash(wc -l < /tmp/codex_*)
+  - Bash(rm -f /tmp/codex_*)
   - Bash(head *)
   - Bash(git diff*)
   - Bash(git show*)
@@ -111,14 +109,55 @@ Update task: `activeForm: "Launching Codex review..."`
 
 ---
 
+#### Command Style: Atomic Commands with Literal Paths
+
+**CRITICAL:** Every Bash tool call must be a single, simple command that starts with a recognizable keyword. This ensures commands match the allowed tool patterns and do not trigger permission prompts.
+
+**Rules:**
+1. **Run `mktemp` as a standalone command.** Read the output to get the path. Do NOT use shell variable assignment like `VAR=$(mktemp ...)`.
+2. **Use the literal path** from the mktemp output in all subsequent commands. Do NOT use `$VARIABLE` references.
+3. **No compound commands.** Do NOT chain commands with `&&`, `||`, or `;`. One command per Bash tool call.
+4. **No if/else blocks.** Run the check command first, read the result, then decide which command to run next in your agent logic.
+5. **No shell variable assignments.** Track all state (file paths, session IDs) in your agent context, not in bash.
+
+**Example — correct pattern:**
+```
+Step 1: Run mktemp
+  Bash: mktemp /tmp/codex_review.XXXXXX.json
+  → Output: /tmp/codex_review.a1b2c3.json  (remember this path)
+
+Step 2: Run codex with the literal path
+  Bash: timeout 120 codex exec --json <<'EOF' 2>&1 | head -c 500000 | tee /tmp/codex_review.a1b2c3.json
+  ...prompt...
+  EOF
+
+Step 3: Check progress
+  Bash: wc -l < /tmp/codex_review.a1b2c3.json
+
+Step 4: Read results
+  Bash: cat /tmp/codex_summary.d4e5f6.txt
+
+Step 5: Clean up
+  Bash: rm -f /tmp/codex_review.a1b2c3.json /tmp/codex_summary.d4e5f6.txt
+```
+
+**Why this matters:** The permission system matches commands from the START of the string. `REVIEW_FILE=$(mktemp ...)` starts with `REVIEW_FILE=` which matches nothing. `mktemp /tmp/codex_...` starts with `mktemp` which matches `Bash(mktemp /tmp/codex_*)`.
+
+---
+
 #### Background Execution with Live Progress
 
 **Always** add `--json` and pipe through `tee` to a temp file. **Always** set `run_in_background: true` on the Bash tool call so you can poll for progress.
 
 **For `codex exec` (default):**
+
+First, create the temp file:
 ```bash
-REVIEW_FILE=$(mktemp /tmp/codex_review.XXXXXX.json)
-timeout 120 codex exec --json <<'EOF' 2>&1 | head -c 500000 | tee "$REVIEW_FILE"
+mktemp /tmp/codex_review.XXXXXX.json
+```
+Read the output path (e.g., `/tmp/codex_review.a1b2c3.json`), then launch the review:
+```bash
+timeout 120 codex exec --json <<'EOF' 2>&1 | head -c 500000 | tee /tmp/codex_review.a1b2c3.json
 Review the following code/changes for:
 - [Specific concern from user's request]
 - Code quality and potential bugs
@@ -132,8 +171,11 @@ EOF
 
 **For `codex review`:**
 ```bash
-REVIEW_FILE=$(mktemp /tmp/codex_review.XXXXXX.json)
-timeout 120 codex review --base [branch] --json 2>&1 | head -c 500000 | tee "$REVIEW_FILE"
+mktemp /tmp/codex_review.XXXXXX.json
+```
+Then:
+```bash
+timeout 120 codex review --base [branch] --json 2>&1 | head -c 500000 | tee /tmp/codex_review.a1b2c3.json
 ```
 
 #### Progress Polling Loop
@@ -145,21 +187,27 @@ After launching the background command, poll the output file to provide live sta
 sleep 15
 ```
 
-2. **Check event count:**
+2. **Check event count** (use the literal path from mktemp):
 ```bash
-wc -l < "$REVIEW_FILE" 2>/dev/null || echo "0"
+wc -l < /tmp/codex_review.a1b2c3.json
 ```
 
 3. **Get a smart progress summary** using a cheap model to summarize what Codex has done so far (avoids reading raw JSONL into context):
 ```bash
-PROGRESS_FILE=$(mktemp /tmp/codex_progress.XXXXXX.txt)
-timeout 120 codex exec -m gpt-5.3-codex-spark -o "$PROGRESS_FILE" "In under 20 words, summarize the progress of this code review. What files were analyzed? Any issues found yet?
+mktemp /tmp/codex_progress.XXXXXX.txt
+```
+Then:
+```bash
+timeout 120 codex exec -m gpt-5.3-codex-spark -o /tmp/codex_progress.d4e5f6.txt "In under 20 words, summarize the progress of this code review. What files were analyzed? Any issues found yet?
 
-IMPORTANT: Do not use any tools. Respond with text analysis only." < "$REVIEW_FILE"
+IMPORTANT: Do not use any tools. Respond with text analysis only." < /tmp/codex_review.a1b2c3.json
+```
+Then read and clean up:
+```bash
+cat /tmp/codex_progress.d4e5f6.txt
 ```
 ```bash
-cat "$PROGRESS_FILE"
-rm -f "$PROGRESS_FILE"
+rm -f /tmp/codex_progress.d4e5f6.txt
 ```
 
 4. **Update the task spinner** with the summary:
@@ -178,8 +226,11 @@ TaskUpdate:
 When the background task completes, **do NOT read the raw JSONL into context** — it can be enormous and will pollute the conversation. Instead, use a cheap model to extract and summarize the findings:
 
 ```bash
-SUMMARY_FILE=$(mktemp /tmp/codex_summary.XXXXXX.txt)
-timeout 120 codex exec -m gpt-5.3-codex-spark -o "$SUMMARY_FILE" <<'SUMMARY_EOF' < "$REVIEW_FILE"
+mktemp /tmp/codex_summary.XXXXXX.txt
+```
+Then (using the literal paths):
+```bash
+timeout 120 codex exec -m gpt-5.3-codex-spark -o /tmp/codex_summary.g7h8i9.txt <<'SUMMARY_EOF' < /tmp/codex_review.a1b2c3.json
 Extract the code review findings from this JSONL stream.
 Return a structured summary:
 1. Files reviewed
@@ -194,17 +245,19 @@ SUMMARY_EOF
 
 Then read only the summary:
 ```bash
-cat "$SUMMARY_FILE"
+cat /tmp/codex_summary.g7h8i9.txt
 ```
 
-**Clean up temp files after reading:**
+**Clean up all temp files after reading:**
 ```bash
-rm -f "$REVIEW_FILE" "$SUMMARY_FILE"
+rm -f /tmp/codex_review.a1b2c3.json /tmp/codex_summary.g7h8i9.txt
 ```
 
 Use this summary for comparison in Step 3. If you need to drill into a specific finding later, you can ask gpt-5.3-codex-spark a targeted follow-up question against the same JSONL file (before cleanup).
 
 **Why this pattern?**
+- **Atomic commands** match allowed tool patterns, preventing permission prompts
+- **Literal paths** instead of shell variables keeps commands simple and matchable
 - `--json` streams JSONL events as Codex works, enabling progress tracking
 - `tee` saves to a pollable file while the background task captures full output
 - `run_in_background` frees the agent to update the user while Codex runs
@@ -232,11 +285,14 @@ Classify the outcome:
 
 Update task: `activeForm: "Discussion round 1: Gathering evidence..."`
 
-Present Claude's position to Codex with a focused prompt:
-
+Create a temp file for round 1:
 ```bash
-ROUND1_FILE=$(mktemp /tmp/codex_round1.XXXXXX.json)
-timeout 120 codex exec --json <<'EOF' 2>&1 | head -c 500000 | tee "$ROUND1_FILE"
+mktemp /tmp/codex_round1.XXXXXX.json
+```
+
+Remember the output path, then present Claude's position to Codex:
+```bash
+timeout 120 codex exec --json <<'EOF' 2>&1 | head -c 500000 | tee /tmp/codex_round1.[path].json
 Given this disagreement about [topic]:
 
 Claude's position: [summary with specific evidence]
@@ -253,14 +309,15 @@ IMPORTANT: Do not use any tools. Respond with text analysis only.
 EOF
 ```
 
-**Extract session ID for subsequent rounds:**
+**Extract session ID for subsequent rounds.** First check if jq is available:
 ```bash
-if command -v jq &>/dev/null; then
-  SESSION_ID=$(jq -r 'select(.type=="thread.started") | .thread_id' "$ROUND1_FILE" 2>/dev/null | head -1)
-else
-  SESSION_ID=$(grep -o '"thread_id":"[^"]*"' "$ROUND1_FILE" 2>/dev/null | head -1 | cut -d'"' -f4)
-fi
+command -v jq
 ```
+If jq is available, extract the thread ID:
+```bash
+jq -r 'select(.type=="thread.started") | .thread_id' /tmp/codex_round1.[path].json
+```
+Remember the session ID output for use in subsequent rounds.
 
 **Evaluate Round 1:**
 - If Codex concedes or provides complementary insight → Synthesize and go to Step 5
@@ -270,15 +327,14 @@ fi
 
 Update task: `activeForm: "Discussion round 2: Seeking resolution..."`
 
-Resume the Codex session with new evidence:
-
+Create a temp file for round 2:
 ```bash
-ROUND2_FILE=$(mktemp /tmp/codex_round2.XXXXXX.json)
-if [ -n "$SESSION_ID" ]; then
-  timeout 120 codex exec resume "$SESSION_ID" --json <<'EOF' 2>&1 | head -c 500000 | tee "$ROUND2_FILE"
-else
-  timeout 120 codex exec --json <<'EOF' 2>&1 | head -c 500000 | tee "$ROUND2_FILE"
-fi
+mktemp /tmp/codex_round2.XXXXXX.json
+```
+
+If you have a session ID from Round 1, resume the session. Otherwise start fresh:
+```bash
+timeout 120 codex exec resume [SESSION_ID] --json <<'EOF' 2>&1 | head -c 500000 | tee /tmp/codex_round2.[path].json
 Claude responds to your Round 1 points:
 
 New evidence: [something not presented before]
@@ -299,15 +355,14 @@ EOF
 
 Update task: `activeForm: "Discussion round 3: Final resolution attempt..."`
 
-Present final evidence and attempt synthesis:
-
+Create a temp file for round 3:
 ```bash
-ROUND3_FILE=$(mktemp /tmp/codex_round3.XXXXXX.json)
-if [ -n "$SESSION_ID" ]; then
-  timeout 120 codex exec resume "$SESSION_ID" --json <<'EOF' 2>&1 | head -c 500000 | tee "$ROUND3_FILE"
-else
-  timeout 120 codex exec --json <<'EOF' 2>&1 | head -c 500000 | tee "$ROUND3_FILE"
-fi
+mktemp /tmp/codex_round3.XXXXXX.json
+```
+
+Resume session (or start fresh if no session ID):
+```bash
+timeout 120 codex exec resume [SESSION_ID] --json <<'EOF' 2>&1 | head -c 500000 | tee /tmp/codex_round3.[path].json
 Final round. Claude's strongest argument:
 
 New evidence: [final evidence not yet presented]
@@ -324,7 +379,7 @@ EOF
 
 **Clean up all discussion temp files:**
 ```bash
-rm -f "$ROUND1_FILE" "$ROUND2_FILE" "$ROUND3_FILE"
+rm -f /tmp/codex_round1.[path].json /tmp/codex_round2.[path].json /tmp/codex_round3.[path].json
 ```
 
 **Evaluate Round 3:**

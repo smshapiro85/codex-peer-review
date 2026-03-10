@@ -9,6 +9,6 @@
   "repository": "https://github.com/jcputney/agent-peer-review",
   "license": "MIT",
   "keywords": ["peer-review", "code-review", "validation", "codex", "ai-collaboration"],
-  "commands": ["./commands/codex-peer-review.md"],
+  "commands": ["./commands/codex-peer-review.md", "./commands/review-plan.md"],
   "agents": ["./agents/codex-peer-reviewer.md"]
 }

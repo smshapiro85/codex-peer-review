@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allowedTools": [
+      "Bash(mktemp /tmp/codex_*)",
+      "Bash(timeout *)",
+      "Bash(codex exec*)",
+      "Bash(codex review*)",
+      "Bash(command -v codex*)",
+      "Bash(command -v jq*)",
+      "Bash(jq *)",
+      "Bash(cat /tmp/codex_*)",
+      "Bash(sleep *)",
+      "Bash(wc -l < /tmp/codex_*)",
+      "Bash(rm -f /tmp/codex_*)",
+      "Bash(head *)",
+      "Bash(git diff*)",
+      "Bash(git show*)",
+      "Bash(git log*)"
+    ]
+  }
+}
