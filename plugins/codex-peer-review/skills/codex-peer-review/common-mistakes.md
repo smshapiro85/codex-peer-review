@@ -19,6 +19,20 @@ Anti-patterns that undermine peer review effectiveness. When you catch yourself 
 
 **If you're validating Claude's proposal/design/recommendation, use `codex exec`.** Only use `codex review` when you're actually reviewing code changes.
 
+## Letting Codex Use Tools
+
+**Codex runs in full-auto mode** and can execute arbitrary tools if not constrained. Always add output protection.
+
+| Rationalization | Reality | Correct Action |
+|-----------------|---------|----------------|
+| "Codex needs to read files" | Embed content in the prompt instead | Use content inclusion |
+| "It's faster to let Codex explore" | Uncontrolled tool use can OOM or access unintended files | Add tool-prevention suffix |
+| "The output cap isn't needed" | 64MB+ of JSONL output will crash the agent | Always pipe through `head -c 500000` |
+| "Static temp paths are fine" | Predictable paths enable collisions and attacks | Always use `mktemp` |
+| "Timeout isn't needed" | Codex can hang indefinitely in full-auto | Always wrap with `timeout 120` |
+
+**Rule:** Every `codex exec` prompt must end with: `IMPORTANT: Do not use any tools. Respond with text analysis only.` Every invocation must include `timeout 120` and `head -c 500000`.
+
 ## Skipping Validation
 
 | Rationalization | Reality | Correct Action |
@@ -40,36 +54,11 @@ Anti-patterns that undermine peer review effectiveness. When you catch yourself 
 | "Codex is probably right" | Both AIs can be wrong | Verify with evidence |
 | "Don't want to argue with AI" | Technical truth matters more than peace | State your position |
 | "Let's just pick one" | Both might have valid points | Synthesize |
-| "Two rounds is enough" | Major issues need proper resolution | Escalate if needed |
+| "Three rounds is enough" | Major issues need proper resolution | Present both positions to user |
 | "It doesn't matter much" | Small decisions compound | Decide correctly |
 | "Whatever is faster" | Fast wrong is slower than slow right | Take time to verify |
 
 **Rule:** Agreement should be based on evidence, not convenience.
-
-## Avoiding Escalation
-
-| Rationalization | Reality | Correct Action |
-|-----------------|---------|----------------|
-| "External research is overkill" | Expert input prevents costly errors | Use for major disputes |
-| "We've discussed enough" | Unresolved stays unresolved | Escalate |
-| "Security concern seems minor" | Security is never minor | Always escalate security |
-| "Don't want to slow down" | Wrong decisions cost more time | Take time to escalate |
-| "We can figure it out" | Two rounds failed; third won't help | Escalate |
-| "User won't notice" | Users notice bugs and security issues | Escalate |
-| "Perplexity isn't available" | WebSearch is a valid fallback | Use WebSearch instead |
-
-**Rule:** If two rounds don't resolve it, escalate (Perplexity if available, WebSearch otherwise). If it's security, escalate immediately.
-
-## Over-Escalation
-
-| Rationalization | Reality | Correct Action |
-|-----------------|---------|----------------|
-| "Better safe than sorry" | Style ≠ safety | Reserve for real disputes |
-| "Let external research decide everything" | Wastes time and resources | Try discussion first |
-| "Not sure about anything" | Build confidence through process | Trust the protocol |
-| "User will appreciate thoroughness" | User wants efficiency | Be judicious |
-
-**Rule:** Escalate major disagreements, not minor preferences.
 
 ## Subagent Misuse
 
@@ -86,12 +75,12 @@ Anti-patterns that undermine peer review effectiveness. When you catch yourself 
 
 | Rationalization | Reality | Correct Action |
 |-----------------|---------|----------------|
-| "I'll just run codex exec again" | Round 2 loses all Round 1 context | Use `codex exec resume [SESSION_ID]` |
+| "I'll just run codex exec again" | Later rounds lose all prior context | Use `codex exec resume [SESSION_ID]` |
 | "Session IDs are complicated" | Just parse `thread_id` from JSON output | Use `--json` flag and extract ID |
-| "It probably remembers anyway" | Each `codex exec` starts fresh | Always resume for Round 2 |
-| "The prompt has enough context" | Codex's own reasoning from Round 1 is lost | Resume maintains full context |
+| "It probably remembers anyway" | Each `codex exec` starts fresh | Always resume for subsequent rounds |
+| "The prompt has enough context" | Codex's own reasoning from prior rounds is lost | Resume maintains full context |
 
-**Rule:** Always capture session ID in Round 1 (`--json` flag) and resume it in Round 2 (`codex exec resume [ID]`).
+**Rule:** Always capture session ID in Round 1 (`--json` flag) and resume it in subsequent rounds (`codex exec resume [ID]`).
 
 ## Guessing the Base Branch
 
@@ -124,7 +113,7 @@ Anti-patterns that undermine peer review effectiveness. When you catch yourself 
 
 ### Sunk Cost Fallacy
 - **Symptom:** "We've discussed so long, let's just go with X"
-- **Fix:** Escalate if truly unresolved
+- **Fix:** Present both positions to user if truly unresolved
 
 ## Recovery Strategies
 
@@ -140,11 +129,11 @@ Anti-patterns that undermine peer review effectiveness. When you catch yourself 
 3. Explain what was missed
 4. Document for future
 
-### If escalation needed after presentation
+### If uncertainty remains after presentation
 1. Inform user of uncertainty
-2. Escalate to Perplexity
-3. Update recommendation
-4. Note correction in output
+2. Present both AI positions clearly
+3. Let user make the final decision
+4. Note the disagreement in output
 
 ## Red Flags - STOP and Check
 
@@ -156,7 +145,6 @@ If you think any of these, pause and reconsider:
 - "No time for peer review"
 - "I'll skip the subagent just this once"
 - "Discussion is taking too long"
-- "Let's not bother with external research"
 - "User won't care about this detail"
 - "The base branch is probably main/develop"
 - "I can figure out the base branch from git"

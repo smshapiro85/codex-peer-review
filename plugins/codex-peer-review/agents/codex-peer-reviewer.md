@@ -3,7 +3,6 @@ name: codex-peer-reviewer
 description: Use this agent to run peer review validation with Codex CLI. Dispatches to a separate context to keep the main conversation clean. Returns synthesized peer review results.
 model: sonnet
 color: cyan
-permissionMode: bypassPermissions
 skills:
   - codex-peer-review
 tools:
@@ -13,13 +12,18 @@ tools:
   - Bash(command -v jq*)
   - Bash(jq *)
   - Bash(grep *)
-  - Bash(mcp-cli *)
   - Bash(tee *)
   - Bash(cat *)
   - Bash(sleep *)
   - Bash(wc *)
+  - Bash(mktemp*)
+  - Bash(rm /tmp/codex_*)
+  - Bash(timeout *)
+  - Bash(head *)
+  - Bash(git diff*)
+  - Bash(git show*)
+  - Bash(git log*)
   - Read
-  - WebSearch
   - TaskCreate
   - TaskUpdate
   - TaskList
@@ -92,6 +96,19 @@ Update task: `activeForm: "Launching Codex review..."`
 
 **IMPORTANT:** Always use heredoc stdin for `codex exec` prompts to avoid shell escaping issues.
 
+**IMPORTANT - Content Inclusion:** Embed file contents directly in prompts rather than referencing file paths. Codex runs in full-auto mode and should not be given opportunities to read arbitrary files. Use `git diff`, `git show`, or `Read` to get content first, then paste it into the prompt.
+
+---
+
+#### Output Protection
+
+**All `codex exec` invocations MUST include these safeguards:**
+1. **Tool-prevention suffix:** End every prompt with `IMPORTANT: Do not use any tools. Respond with text analysis only.`
+2. **Timeout:** Wrap with `timeout 120` to prevent runaway execution
+3. **Output cap:** Pipe through `head -c 500000` (500KB) to prevent OOM from large outputs
+4. **Temp files:** Use `mktemp` for all temporary files, never static paths
+5. **Cleanup:** Remove temp files after reading their contents
+
 ---
 
 #### Background Execution with Live Progress
@@ -100,19 +117,23 @@ Update task: `activeForm: "Launching Codex review..."`
 
 **For `codex exec` (default):**
 ```bash
-codex exec --json <<'EOF' 2>&1 | tee /tmp/codex_peer_review.json
+REVIEW_FILE=$(mktemp /tmp/codex_review.XXXXXX.json)
+timeout 120 codex exec --json <<'EOF' 2>&1 | head -c 500000 | tee "$REVIEW_FILE"
 Review the following code/changes for:
 - [Specific concern from user's request]
 - Code quality and potential bugs
 - Edge cases
 
-[Paste the specific code or describe the specific changes here]
+[Paste the actual code content here - do NOT reference file paths for Codex to read]
+
+IMPORTANT: Do not use any tools. Respond with text analysis only.
 EOF
 ```
 
 **For `codex review`:**
 ```bash
-codex review --base [branch] --json 2>&1 | tee /tmp/codex_peer_review.json
+REVIEW_FILE=$(mktemp /tmp/codex_review.XXXXXX.json)
+timeout 120 codex review --base [branch] --json 2>&1 | head -c 500000 | tee "$REVIEW_FILE"
 ```
 
 #### Progress Polling Loop
@@ -126,15 +147,19 @@ sleep 15
 
 2. **Check event count:**
 ```bash
-wc -l < /tmp/codex_peer_review.json 2>/dev/null || echo "0"
+wc -l < "$REVIEW_FILE" 2>/dev/null || echo "0"
 ```
 
 3. **Get a smart progress summary** using a cheap model to summarize what Codex has done so far (avoids reading raw JSONL into context):
 ```bash
-codex exec -m gpt-5.3-codex-spark -o /tmp/codex_progress_summary.txt "In under 20 words, summarize the progress of this code review. What files were analyzed? Any issues found yet?" < /tmp/codex_peer_review.json
+PROGRESS_FILE=$(mktemp /tmp/codex_progress.XXXXXX.txt)
+timeout 120 codex exec -m gpt-5.3-codex-spark -o "$PROGRESS_FILE" "In under 20 words, summarize the progress of this code review. What files were analyzed? Any issues found yet?
+
+IMPORTANT: Do not use any tools. Respond with text analysis only." < "$REVIEW_FILE"
 ```
 ```bash
-cat /tmp/codex_progress_summary.txt
+cat "$PROGRESS_FILE"
+rm -f "$PROGRESS_FILE"
 ```
 
 4. **Update the task spinner** with the summary:
@@ -153,7 +178,8 @@ TaskUpdate:
 When the background task completes, **do NOT read the raw JSONL into context** — it can be enormous and will pollute the conversation. Instead, use a cheap model to extract and summarize the findings:
 
 ```bash
-codex exec -m gpt-5.3-codex-spark -o /tmp/codex_final_summary.txt <<'SUMMARY_EOF' < /tmp/codex_peer_review.json
+SUMMARY_FILE=$(mktemp /tmp/codex_summary.XXXXXX.txt)
+timeout 120 codex exec -m gpt-5.3-codex-spark -o "$SUMMARY_FILE" <<'SUMMARY_EOF' < "$REVIEW_FILE"
 Extract the code review findings from this JSONL stream.
 Return a structured summary:
 1. Files reviewed
@@ -161,15 +187,22 @@ Return a structured summary:
 3. Suggestions and recommendations
 4. Overall assessment
 Be thorough but concise — under 500 words.
+
+IMPORTANT: Do not use any tools. Respond with text analysis only.
 SUMMARY_EOF
 ```
 
 Then read only the summary:
 ```bash
-cat /tmp/codex_final_summary.txt
+cat "$SUMMARY_FILE"
 ```
 
-Use this summary for comparison in Step 3. If you need to drill into a specific finding later, you can ask gpt-5.3-codex-spark a targeted follow-up question against the same JSONL file.
+**Clean up temp files after reading:**
+```bash
+rm -f "$REVIEW_FILE" "$SUMMARY_FILE"
+```
+
+Use this summary for comparison in Step 3. If you need to drill into a specific finding later, you can ask gpt-5.3-codex-spark a targeted follow-up question against the same JSONL file (before cleanup).
 
 **Why this pattern?**
 - `--json` streams JSONL events as Codex works, enabling progress tracking
@@ -177,21 +210,23 @@ Use this summary for comparison in Step 3. If you need to drill into a specific 
 - `run_in_background` frees the agent to update the user while Codex runs
 - `gpt-5.3-codex-spark` summarizes JSONL cheaply so raw output never enters the Claude context
 - Heredoc stdin avoids shell escaping issues (for `codex exec`)
+- `timeout 120` prevents runaway processes that could hang indefinitely
+- `head -c 500000` caps output at 500KB to prevent OOM crashes
+- `mktemp` prevents temp file collisions and path-prediction attacks
 
 ### Step 3: Compare Results
 
 Update task: `activeForm: "Comparing AI positions..."`
 
 Classify the outcome:
-- **Agreement**: Both AIs aligned → Go to Step 6 (Synthesize)
+- **Agreement**: Both AIs aligned → Go to Step 5 (Synthesize)
 - **Disagreement**: Positions differ → Go to Step 4 (Discussion)
-- **Critical Issue**: Security/architecture/breaking change → Go to Step 5 (Escalate immediately)
 
 ---
 
 ### Step 4: Discussion Protocol (When Positions Differ)
 
-**Maximum 2 rounds.** If still unresolved after Round 2, escalate to Step 5.
+**Maximum 3 rounds.** If still unresolved after Round 3, go to Step 5 with "unresolved" format.
 
 #### Round 1: State Positions with Evidence
 
@@ -200,11 +235,12 @@ Update task: `activeForm: "Discussion round 1: Gathering evidence..."`
 Present Claude's position to Codex with a focused prompt:
 
 ```bash
-codex exec --json <<'EOF' 2>&1 | tee /tmp/codex_round1_$$.json
+ROUND1_FILE=$(mktemp /tmp/codex_round1.XXXXXX.json)
+timeout 120 codex exec --json <<'EOF' 2>&1 | head -c 500000 | tee "$ROUND1_FILE"
 Given this disagreement about [topic]:
 
 Claude's position: [summary with specific evidence]
-- Code reference: [file:line if applicable]
+- Code reference: [paste relevant code snippet if applicable]
 - Convention: [project standard if applicable]
 - Rationale: [technical reasoning]
 
@@ -212,20 +248,22 @@ Provide your evidence-based response:
 1. Where do you agree?
 2. Where do you disagree and why?
 3. What specific evidence supports your position?
+
+IMPORTANT: Do not use any tools. Respond with text analysis only.
 EOF
 ```
 
-**Extract session ID for Round 2:**
+**Extract session ID for subsequent rounds:**
 ```bash
 if command -v jq &>/dev/null; then
-  SESSION_ID=$(jq -r 'select(.type=="thread.started") | .thread_id' /tmp/codex_round1_$$.json 2>/dev/null | head -1)
+  SESSION_ID=$(jq -r 'select(.type=="thread.started") | .thread_id' "$ROUND1_FILE" 2>/dev/null | head -1)
 else
-  SESSION_ID=$(grep -o '"thread_id":"[^"]*"' /tmp/codex_round1_$$.json 2>/dev/null | head -1 | cut -d'"' -f4)
+  SESSION_ID=$(grep -o '"thread_id":"[^"]*"' "$ROUND1_FILE" 2>/dev/null | head -1 | cut -d'"' -f4)
 fi
 ```
 
 **Evaluate Round 1:**
-- If Codex concedes or provides complementary insight → Synthesize and go to Step 6
+- If Codex concedes or provides complementary insight → Synthesize and go to Step 5
 - If disagreement remains → Continue to Round 2
 
 #### Round 2: Deeper Analysis
@@ -235,10 +273,11 @@ Update task: `activeForm: "Discussion round 2: Seeking resolution..."`
 Resume the Codex session with new evidence:
 
 ```bash
+ROUND2_FILE=$(mktemp /tmp/codex_round2.XXXXXX.json)
 if [ -n "$SESSION_ID" ]; then
-  codex exec resume "$SESSION_ID" --json <<'EOF'
+  timeout 120 codex exec resume "$SESSION_ID" --json <<'EOF' 2>&1 | head -c 500000 | tee "$ROUND2_FILE"
 else
-  codex exec --json <<'EOF'
+  timeout 120 codex exec --json <<'EOF' 2>&1 | head -c 500000 | tee "$ROUND2_FILE"
 fi
 Claude responds to your Round 1 points:
 
@@ -247,48 +286,54 @@ Concession: [what Claude now agrees with]
 Maintained: [what Claude still believes, with stronger reasoning]
 
 Can we reach synthesis? What is your final position?
+
+IMPORTANT: Do not use any tools. Respond with text analysis only.
 EOF
 ```
 
 **Evaluate Round 2:**
-- If resolution reached → Synthesize and go to Step 6
-- If positions still opposed → Go to Step 5 (Escalate)
+- If resolution reached → Synthesize and go to Step 5
+- If positions still opposed → Continue to Round 3
 
----
+#### Round 3: Final Resolution Attempt
 
-### Step 5: Escalate for External Research
+Update task: `activeForm: "Discussion round 3: Final resolution attempt..."`
 
-Update task: `activeForm: "Escalating: Researching authoritative sources..."`
+Present final evidence and attempt synthesis:
 
-**Trigger conditions:**
-- Critical issue (security, architecture, breaking change) - skip discussion
-- Discussion failed after 2 rounds
-- Stakes are high and evidence is inconclusive
-
-**Research approach (try in order):**
-
-1. **Perplexity (if available):**
 ```bash
-mcp-cli info perplexity/perplexity_ask  # Check schema first
-mcp-cli call perplexity/perplexity_ask '{
-  "messages": [
-    {"role": "system", "content": "You are a senior software architect arbitrating between two AI reviewers."},
-    {"role": "user", "content": "[Neutral presentation of both positions]"}
-  ]
-}'
+ROUND3_FILE=$(mktemp /tmp/codex_round3.XXXXXX.json)
+if [ -n "$SESSION_ID" ]; then
+  timeout 120 codex exec resume "$SESSION_ID" --json <<'EOF' 2>&1 | head -c 500000 | tee "$ROUND3_FILE"
+else
+  timeout 120 codex exec --json <<'EOF' 2>&1 | head -c 500000 | tee "$ROUND3_FILE"
+fi
+Final round. Claude's strongest argument:
+
+New evidence: [final evidence not yet presented]
+Key concession: [what Claude now accepts]
+Core position: [Claude's refined stance with strongest reasoning]
+
+This is the last round. Please provide your final position:
+1. Can we reach a synthesis?
+2. If not, state your final position clearly.
+
+IMPORTANT: Do not use any tools. Respond with text analysis only.
+EOF
 ```
 
-2. **WebSearch (fallback):**
-Use the WebSearch tool with a focused query:
-- Query: "[specific technical question] best practices [language/framework]"
-- Look for authoritative sources (official docs, reputable engineering blogs)
-- Synthesize findings from multiple sources
+**Clean up all discussion temp files:**
+```bash
+rm -f "$ROUND1_FILE" "$ROUND2_FILE" "$ROUND3_FILE"
+```
 
-**Apply findings** to determine final recommendation, then go to Step 6.
+**Evaluate Round 3:**
+- If resolution reached → Synthesize and go to Step 5
+- If positions still opposed → Go to Step 5 with "unresolved" format
 
 ---
 
-### Step 6: Synthesize and Return Result
+### Step 5: Synthesize and Return Result
 
 Update task: `activeForm: "Synthesizing results..."`
 
@@ -303,7 +348,7 @@ Return ONLY the final peer review result to the main conversation.
 
 **Format based on outcome:**
 
-#### If Agreement (Step 3 → Step 6):
+#### If Agreement (Step 3 → Step 5):
 ```markdown
 ## Peer Review Result
 
@@ -319,7 +364,7 @@ Return ONLY the final peer review result to the main conversation.
 **Recommendation:** [Final recommendation]
 ```
 
-#### If Resolved Through Discussion (Step 4 → Step 6):
+#### If Resolved Through Discussion (Step 4 → Step 5):
 ```markdown
 ## Peer Review Result
 
@@ -339,24 +384,22 @@ Return ONLY the final peer review result to the main conversation.
 **Recommendation:** [Synthesized recommendation]
 ```
 
-#### If Escalated (Step 5 → Step 6):
+#### If Unresolved (3 rounds failed → Step 5):
 ```markdown
 ## Peer Review Result
 
-**Status:** Escalated for external research
-**Source:** [Perplexity | WebSearch]
-**Confidence:** [High if authoritative source | Medium if inconclusive]
+**Status:** Unresolved — user decision needed
+**Confidence:** Positions diverge after 3 rounds of discussion
 
-**Disagreement:** [Nature of the conflict]
+**Claude's Position:** [summary with key evidence]
 
-**Research Findings:** [What authoritative sources say]
-**Sources:** [URLs if from WebSearch]
+**Codex's Position:** [summary with key evidence]
 
-**Key Findings:**
-- [Finding 1]
-- [Finding 2]
+**Where They Agree:** [common ground, if any]
 
-**Recommendation:** [Final recommendation based on external research]
+**Where They Differ:** [core disagreement]
+
+**Your Call:** [what the user needs to decide, framed as a clear choice]
 ```
 
 ## Important Rules
@@ -364,11 +407,11 @@ Return ONLY the final peer review result to the main conversation.
 1. **Do NOT** return raw Codex output to the main conversation
 2. **Do NOT** return discussion round details unless specifically requested
 3. **DO** keep the main context clean by summarizing results
-4. **DO** escalate immediately for security/architecture/breaking changes
+4. **DO** flag security/architecture/breaking changes as high-priority findings
+5. **DO** always clean up temp files — use `rm -f` on all `mktemp`-created files after reading
 
 ## Reference
 
 The full peer review protocol is defined in the `codex-peer-review` skill. Load it if you need detailed guidance on:
-- Discussion protocol (2-round maximum)
-- Escalation criteria
+- Discussion protocol (3-round maximum)
 - Common mistakes to avoid

@@ -7,12 +7,11 @@ description: This skill should be invoked BEFORE presenting implementation plans
 
 Peer validation system using OpenAI Codex CLI. Validates Claude's designs and code reviews through structured discussion before presenting to user.
 
-**Core principle:** Two AI perspectives catch more issues than one. When they disagree, structured discussion resolves most issues. External research (Perplexity if available, otherwise WebSearch) arbitrates persistent disagreements.
+**Core principle:** Two AI perspectives catch more issues than one. When they disagree, a 3-round structured discussion resolves most issues. If still unresolved, both positions are presented to the user to decide.
 
 ## Reference Files
 
 @discussion-protocol.md
-@escalation-criteria.md
 @common-mistakes.md
 
 ## Modes of Operation
@@ -50,13 +49,13 @@ digraph workflow {
     codexreview [label="codex review\n--base X"];
     codexexec [label="codex exec\n\"focused prompt\""];
     compare [label="Compare findings" shape=diamond];
-    critical [label="Security/Architecture/\nBreaking Change?" shape=diamond style=filled fillcolor=lightyellow];
     agree [label="Synthesize &\npresent result"];
     round1 [label="Discussion Round 1:\nState positions + evidence"];
     resolved1 [label="Resolved?" shape=diamond];
     round2 [label="Discussion Round 2:\nDeeper analysis"];
     resolved2 [label="Resolved?" shape=diamond];
-    escalate [label="Escalate:\nPerplexity/WebSearch" style=filled fillcolor=lightcoral];
+    round3 [label="Discussion Round 3:\nFinal resolution attempt"];
+    resolved3 [label="Resolved?" shape=diamond];
     final [label="Synthesize final\nresult" shape=ellipse];
 
     start -> dispatch;
@@ -66,25 +65,44 @@ digraph workflow {
     codexreview -> compare;
     codexexec -> compare;
     compare -> agree [label="aligned"];
-    compare -> critical [label="disagree"];
-    critical -> escalate [label="YES\n(skip discussion)"];
-    critical -> round1 [label="no"];
+    compare -> round1 [label="disagree"];
     round1 -> resolved1;
     resolved1 -> final [label="yes"];
     resolved1 -> round2 [label="no"];
     round2 -> resolved2;
     resolved2 -> final [label="yes"];
-    resolved2 -> escalate [label="no"];
-    escalate -> final;
+    resolved2 -> round3 [label="no"];
+    round3 -> resolved3;
+    resolved3 -> final [label="yes"];
+    resolved3 -> final [label="no\n(unresolved)"];
     agree -> final;
 }
 ```
 
-**Immediate Escalation:** Security concerns, architecture conflicts, breaking changes, or order-of-magnitude performance disagreements skip discussion and escalate directly. See @escalation-criteria.md for details.
-
 ## Subagent Dispatch
 
 **CRITICAL:** Always use subagent to avoid context pollution. Never run Codex in main context.
+
+### Output Protection
+
+**All `codex exec` invocations MUST include these safeguards to prevent OOM and uncontrolled execution:**
+
+| Safeguard | Implementation | Purpose |
+|-----------|---------------|---------|
+| Tool prevention | End prompts with `IMPORTANT: Do not use any tools. Respond with text analysis only.` | Prevents Codex from running tools in full-auto mode |
+| Timeout | Wrap with `timeout 120` | Prevents runaway execution |
+| Output cap | Pipe through `head -c 500000` | Prevents OOM from large outputs (500KB limit) |
+| Temp files | Use `mktemp /tmp/codex_*.XXXXXX` | Prevents collisions and path prediction |
+| Cleanup | `rm -f "$TMPFILE"` after reading | Prevents temp file accumulation |
+
+### Content Inclusion
+
+**Embed file contents directly in prompts** instead of referencing file paths for Codex to read:
+
+- Use `git diff`, `git show`, or `Read` to get content first
+- Paste the relevant code/diff into the `codex exec` heredoc
+- This prevents Codex from accessing arbitrary files in full-auto mode
+- Keep included content focused — only the relevant sections, not entire files
 
 ### Command Selection (IMPORTANT)
 
@@ -120,12 +138,13 @@ Run: codex review --base [branch]
 Run: codex exec with heredoc (avoids escaping issues and permission prompts):
 
 ```bash
-codex exec <<'EOF'
+REVIEW_FILE=$(mktemp /tmp/codex_review.XXXXXX.json)
+timeout 120 codex exec <<'EOF' 2>&1 | head -c 500000 | tee "$REVIEW_FILE"
 Validate this [design|refactoring plan|architecture proposal]:
 
 [Summarize Claude's specific proposal in 2-3 sentences]
 
-Files affected: [list specific files]
+[Paste relevant code content here - do NOT reference file paths]
 
 Check for:
 - Architecture issues
@@ -134,6 +153,8 @@ Check for:
 - Missing considerations
 
 Provide specific, actionable feedback.
+
+IMPORTANT: Do not use any tools. Respond with text analysis only.
 EOF
 ```
 
@@ -141,17 +162,6 @@ EOF
 After running the appropriate command:
 1. Compare Codex output to Claude's position
 2. Classify: agreement | disagreement | complement
-
-## If Uncertain Before Running Codex
-Check external sources first. Try Perplexity if available, otherwise use WebSearch:
-
-```bash
-# Option 1: If Perplexity MCP is available
-mcp-cli call perplexity/perplexity_ask '{"messages":[{"role":"user","content":"[your uncertainty]"}]}'
-
-# Option 2: If Perplexity is not available, use WebSearch tool
-# WebSearch query: "[your uncertainty]"
-```
 
 ## Return Format
 {
@@ -188,27 +198,29 @@ First, verify tools are available:
 1. Run codex exec with --json and capture output to extract session ID:
 
    ```bash
-   codex exec --json <<'EOF' 2>&1 | tee /tmp/codex_round1_$$.json
+   ROUND1_FILE=$(mktemp /tmp/codex_round1.XXXXXX.json)
+   timeout 120 codex exec --json <<'EOF' 2>&1 | head -c 500000 | tee "$ROUND1_FILE"
    Given this disagreement about [topic]:
 
    Claude's position: [summary with evidence]
 
    Provide your evidence-based reasoning. Reference specific code or conventions.
    What is your position and why?
+
+   IMPORTANT: Do not use any tools. Respond with text analysis only.
    EOF
    ```
 
-2. Extract session ID for Round 2:
+2. Extract session ID for subsequent rounds:
    ```bash
    # Extract thread_id from JSON output (grep fallback if jq unavailable)
-   TMPFILE="/tmp/codex_round1_$$.json"
    if command -v jq &>/dev/null; then
-     SESSION_ID=$(jq -r 'select(.type=="thread.started") | .thread_id' "$TMPFILE" 2>/dev/null | head -1)
+     SESSION_ID=$(jq -r 'select(.type=="thread.started") | .thread_id' "$ROUND1_FILE" 2>/dev/null | head -1)
    else
-     SESSION_ID=$(grep -o '"thread_id":"[^"]*"' "$TMPFILE" 2>/dev/null | head -1 | cut -d'"' -f4)
+     SESSION_ID=$(grep -o '"thread_id":"[^"]*"' "$ROUND1_FILE" 2>/dev/null | head -1 | cut -d'"' -f4)
    fi
 
-   [ -z "$SESSION_ID" ] && echo "WARNING: Could not extract session ID. Round 2 will start fresh."
+   [ -z "$SESSION_ID" ] && echo "WARNING: Could not extract session ID. Subsequent rounds will start fresh."
    ```
 
 4. Parse Codex response and attempt synthesis
@@ -220,7 +232,7 @@ First, verify tools are available:
   "resolution_possible": boolean,
   "proposed_synthesis": "...|null",
   "remaining_disagreement": "...|null",
-  "recommend_escalation": boolean
+  "continue_discussion": boolean
 }
 ```
 
@@ -234,32 +246,24 @@ Discussion Round 2
 
    ```bash
    # If we have a session ID, resume; otherwise start fresh with context
+   ROUND2_FILE=$(mktemp /tmp/codex_round2.XXXXXX.json)
    if [ -n "$SESSION_ID" ]; then
-     codex exec resume "$SESSION_ID" --json <<'EOF' 2>&1 | tee /tmp/codex_round2_$$.json
+     timeout 120 codex exec resume "$SESSION_ID" --json <<'EOF' 2>&1 | head -c 500000 | tee "$ROUND2_FILE"
+   else
+     timeout 120 codex exec --json <<'EOF' 2>&1 | head -c 500000 | tee "$ROUND2_FILE"
+   fi
    Claude responds to your points:
 
    [Claude's Round 2 response with new evidence]
 
    Can we reach synthesis? What is your final position?
+
+   IMPORTANT: Do not use any tools. Respond with text analysis only.
    EOF
-   else
-     # Fallback: Start fresh but include Round 1 context in prompt
-     codex exec --json <<'EOF' 2>&1 | tee /tmp/codex_round2_$$.json
-   Continuing discussion about [topic]:
-
-   Round 1 summary:
-   - Claude's position: [summary]
-   - Codex's position: [summary from Round 1]
-
-   Claude's Round 2 response: [new evidence]
-
-   Can we reach synthesis? What is your final position?
-   EOF
-   fi
    ```
 
 2. Parse Codex response
-3. Determine if resolved or needs escalation
+3. Determine if resolved or needs Round 3
 
 ## Return Format
 {
@@ -269,55 +273,58 @@ Discussion Round 2
   "resolution_possible": boolean,
   "proposed_synthesis": "...|null",
   "remaining_disagreement": "...|null",
-  "recommend_escalation": boolean
+  "continue_to_round3": boolean
 }
 ```
 
-**Why session IDs matter:** Without resuming the session, Codex starts fresh and loses context from Round 1. The fallback (re-providing context) works but is less efficient and may lose nuance.
-
-### Arbitration Subagent
-
-When escalating for external research/arbitration:
+#### Round 3 (Final Resolution Attempt)
 
 ```
-Escalate for external arbitration.
+Discussion Round 3
 
-## Disagreement Context
-- Topic: [specific technical question]
-- Claude's position: [with evidence]
-- Codex's position: [with evidence]
-- Why unresolved: [summary of discussion]
+## Task
+1. Resume the previous Codex session (if session ID available):
 
-## Task - Choose Available Method
+   ```bash
+   ROUND3_FILE=$(mktemp /tmp/codex_round3.XXXXXX.json)
+   if [ -n "$SESSION_ID" ]; then
+     timeout 120 codex exec resume "$SESSION_ID" --json <<'EOF' 2>&1 | head -c 500000 | tee "$ROUND3_FILE"
+   else
+     timeout 120 codex exec --json <<'EOF' 2>&1 | head -c 500000 | tee "$ROUND3_FILE"
+   fi
+   Final round. Claude's strongest argument:
 
-### Option 1: If Perplexity MCP is available
-1. Check schema: mcp-cli info perplexity/perplexity_ask
-2. Call Perplexity with neutral framing:
-   mcp-cli call perplexity/perplexity_ask '{
-     "messages": [
-       {"role": "system", "content": "You are a senior software architect arbitrating between two AI code reviewers. Provide definitive guidance based on industry best practices."},
-       {"role": "user", "content": "[Neutral presentation of both positions with context]"}
-     ]
-   }'
+   New evidence: [final evidence not yet presented]
+   Key concession: [what Claude now accepts]
+   Core position: [Claude's refined stance with strongest reasoning]
 
-### Option 2: If Perplexity is NOT available
-1. Use WebSearch tool with a focused query:
-   - Query: "[specific technical question] best practices [language/framework]"
-2. Search for authoritative sources (official docs, well-known engineering blogs)
-3. Synthesize findings from multiple sources
+   This is the last round. Please provide your final position:
+   1. Can we reach a synthesis?
+   2. If not, state your final position clearly.
 
-## Apply ruling to synthesis
+   IMPORTANT: Do not use any tools. Respond with text analysis only.
+   EOF
+
+   # Clean up all temp files
+   rm -f "$ROUND1_FILE" "$ROUND2_FILE" "$ROUND3_FILE"
+   ```
+
+2. Parse Codex response
+3. If resolved → synthesize. If not → present both positions to user.
 
 ## Return Format
 {
-  "arbitration_source": "perplexity|websearch",
-  "ruling": "...",
-  "sources": ["..."],  // URLs if from WebSearch
-  "recommended_action": "...",
-  "final_synthesis": "...",
-  "confidence": "high|medium"  // medium if WebSearch results were inconclusive
+  "session_id": "[thread_id or null]",
+  "session_resumed": boolean,
+  "codex_response": "...",
+  "resolution_possible": boolean,
+  "proposed_synthesis": "...|null",
+  "remaining_disagreement": "...|null",
+  "present_to_user": boolean
 }
 ```
+
+**Why session IDs matter:** Without resuming the session, Codex starts fresh and loses context from prior rounds. The fallback (re-providing context) works but is less efficient and may lose nuance.
 
 ## Codex CLI Commands
 
@@ -362,15 +369,33 @@ echo "Focus on security vulnerabilities and error handling in the authentication
 **Key:** Always pass Claude's review focus (e.g., "security in authentication flow", "error handling in API endpoints", "the UserService refactoring") to Codex so both AIs examine the same areas.
 
 ### For Design/Plan Validation (NOT code review!)
+
+**Always use heredoc, timeout, output cap, and tool-prevention suffix:**
 ```bash
 # Validate a refactoring proposal
-codex exec "Validate this refactoring plan for the data processor module: Extract 3 classes (Validator, Parser, Invoker) to fix SRP violation. Is this appropriate? What are the risks?"
+timeout 120 codex exec <<'EOF' | head -c 500000
+Validate this refactoring plan for the data processor module: Extract 3 classes
+(Validator, Parser, Invoker) to fix SRP violation. Is this appropriate? What are the risks?
+
+IMPORTANT: Do not use any tools. Respond with text analysis only.
+EOF
 
 # Validate architecture recommendation
-codex exec "Review this architecture decision: Use event-driven pattern for notification system instead of direct calls. Context: [language/framework] with dependency injection. Check for issues."
+timeout 120 codex exec <<'EOF' | head -c 500000
+Review this architecture decision: Use event-driven pattern for notification system
+instead of direct calls. Context: [language/framework] with dependency injection.
+Check for issues.
+
+IMPORTANT: Do not use any tools. Respond with text analysis only.
+EOF
 
 # Answer a broad technical question
-codex exec "In a multi-module project, should shared DTOs go in the common module or a dedicated api-contracts module? Consider: compile dependencies, versioning, encapsulation."
+timeout 120 codex exec <<'EOF' | head -c 500000
+In a multi-module project, should shared DTOs go in the common module or a dedicated
+api-contracts module? Consider: compile dependencies, versioning, encapsulation.
+
+IMPORTANT: Do not use any tools. Respond with text analysis only.
+EOF
 ```
 
 **REMEMBER:** `codex review` reviews the entire git diff. `codex exec` validates a specific proposal.
@@ -401,19 +426,21 @@ codex exec "In a multi-module project, should shared DTOs go in the common modul
 **Confidence:** Medium-High
 ```
 
-### External Research Arbitration
+### Unresolved Disagreement
 ```markdown
 ## Peer Review Result
-**Status:** Escalated for external research
-**Source:** [Perplexity | WebSearch]
+**Status:** Unresolved — user decision needed
+**Confidence:** Positions diverge after 3 rounds of discussion
 
-**Disagreement:** [nature of conflict]
+**Claude's Position:** [summary with key evidence]
 
-**Research Findings:** [authoritative answer]
-**Sources:** [URLs if from WebSearch]
+**Codex's Position:** [summary with key evidence]
 
-**Final Recommendation:** [based on findings + context]
-**Confidence:** High (expert arbitration) | Medium (if WebSearch was inconclusive)
+**Where They Agree:** [common ground, if any]
+
+**Where They Differ:** [core disagreement]
+
+**Your Call:** [what the user needs to decide, framed as a clear choice]
 ```
 
 ## Prerequisites
@@ -441,7 +468,6 @@ command -v jq &>/dev/null || echo "TIP: Install jq for better JSON parsing: brew
 
 **If Codex CLI is not available:**
 - The skill will not work for code review or design validation
-- You can still use WebSearch for escalation/arbitration
 - Inform the user: "Codex CLI is required for peer review. Please install it with `npm i -g @openai/codex`"
 
 ## Quick Reference
@@ -455,8 +481,7 @@ command -v jq &>/dev/null || echo "TIP: Install jq for better JSON parsing: brew
 | User asks broad question | `codex exec` | Answer via focused prompt |
 | Codex agrees | - | Synthesize and present |
 | Codex disagrees | - | Start discussion protocol |
-| Two rounds fail | Perplexity/WebSearch | Escalate for external research |
-| Major issue (security/architecture) | Perplexity/WebSearch | Immediate escalation |
+| Three rounds fail | - | Present both positions to user |
 
 **Key distinction:**
 - Use `codex review` ONLY when reviewing actual code changes (git diff)

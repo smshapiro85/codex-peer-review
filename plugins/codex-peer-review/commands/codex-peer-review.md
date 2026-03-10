@@ -112,4 +112,4 @@ Use Task tool:
 The agent will return a synthesized result. Present it to the user:
 - **Validated**: Both AIs agreed
 - **Resolved**: Disagreement resolved through discussion
-- **Escalated**: Required external research (Perplexity/WebSearch)
+- **Unresolved**: Both positions presented for user decision

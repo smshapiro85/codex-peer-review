@@ -1,6 +1,6 @@
 # Discussion Protocol: Claude vs Codex
 
-Structured 2-round resolution of disagreements through evidence-based discussion.
+Structured 3-round resolution of disagreements through evidence-based discussion.
 
 ## Protocol Rules
 
@@ -18,10 +18,11 @@ Every position should cite evidence from these categories **as applicable**:
 - Threat modeling or risk analysis
 - RFCs or design documents
 
-### Rule 2: Two Round Maximum
+### Rule 2: Three Round Maximum
 - Round 1: State positions, provide evidence
 - Round 2: Respond to evidence, attempt synthesis
-- After Round 2: Escalate or accept synthesis
+- Round 3: Final evidence, last attempt at resolution
+- After Round 3: Present both positions to user if unresolved
 
 ### Rule 3: Good Faith
 - Assume the other AI has valid reasoning
@@ -30,11 +31,18 @@ Every position should cite evidence from these categories **as applicable**:
 
 ### Rule 4: Session Continuity
 - **Capture session ID** from Round 1 using `codex exec --json` (look for `thread_id` in output)
-- **Resume session** in Round 2 using `codex exec resume [SESSION_ID]`
-- This maintains conversation context so Codex remembers Round 1 discussion
-- Without session continuity, Round 2 starts fresh and loses valuable context
+- **Resume session** in subsequent rounds using `codex exec resume [SESSION_ID]`
+- This maintains conversation context so Codex remembers prior discussion
+- Without session continuity, later rounds start fresh and lose valuable context
 
-### Rule 5: Classify Disagreement Type
+### Rule 5: Output Protection
+- **All `codex exec` invocations** must include `timeout 120`, `head -c 500000`, and the tool-prevention suffix
+- End every prompt with: `IMPORTANT: Do not use any tools. Respond with text analysis only.`
+- Use `mktemp` for all temporary files — never use static `/tmp/codex_*` paths
+- Clean up temp files after reading with `rm -f`
+- Embed code content directly in prompts instead of referencing file paths
+
+### Rule 6: Classify Disagreement Type
 
 | Type | Definition | Action |
 |------|------------|--------|
@@ -95,10 +103,38 @@ proposed_synthesis: "[attempt to merge positions]"
 
 ### Round 2 Outcome
 ```yaml
-outcome: "[resolved|escalate]"
+outcome: "[resolved|continue]"
 final_synthesis: "[if resolved, the agreed approach]"
-escalation_reason: "[if escalating, why discussion failed]"
-escalation_question: "[precise question for Perplexity]"
+remaining_issues: "[if continuing, specific points for Round 3]"
+```
+
+## Round 3 Structure
+
+### Focus
+Final attempt at resolution. Address ONLY `remaining_issues` from Round 2. Present strongest evidence.
+
+### Claude's Response
+```yaml
+addressing: "[specific remaining issue]"
+final_evidence: "[strongest evidence not yet presented]"
+key_concession: "[what Claude now accepts from Codex]"
+core_position: "[Claude's refined final stance]"
+```
+
+### Codex's Response
+```yaml
+addressing: "[specific remaining issue]"
+response_to_evidence: "[how final evidence changes or confirms view]"
+proposed_synthesis: "[final attempt to merge positions]"
+final_position: "[Codex's refined final stance if no synthesis]"
+```
+
+### Round 3 Outcome
+```yaml
+outcome: "[resolved|unresolved]"
+final_synthesis: "[if resolved, the agreed approach]"
+claude_position: "[if unresolved, Claude's final stance]"
+codex_position: "[if unresolved, Codex's final stance]"
 ```
 
 ## Example Discussion
@@ -163,25 +199,25 @@ final_synthesis: "Use Result type with TODO comment for module-wide migration"
 
 ## When Discussion Fails
 
-If after Round 2:
+If after Round 3:
 - Positions remain fundamentally opposed
 - Evidence is inconclusive on both sides
-- Stakes are high (security, architecture, breaking changes)
+- Neither AI can provide decisive new evidence
 
-Then escalate with precise question:
+Then present both positions to the user and let them decide:
 
 ```
-Given [specific context], should [option A] or [option B] be used?
+## Unresolved Disagreement
 
-Context:
-- Codebase: [language/framework]
-- Existing patterns: [relevant patterns]
-- Constraints: [any constraints]
+Both AIs reviewed this and could not reach consensus after 3 rounds of discussion.
 
-Claude's position: [summary with key evidence]
-Codex's position: [summary with key evidence]
+**Claude's position:** [summary with key evidence]
+**Codex's position:** [summary with key evidence]
 
-Which approach is correct and why?
+**Where they agree:** [common ground]
+**Where they differ:** [core disagreement]
+
+**Your call:** [what the user needs to decide, framed as a clear choice]
 ```
 
 ## Anti-Patterns
