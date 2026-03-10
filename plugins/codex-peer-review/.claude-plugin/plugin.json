@@ -1,6 +1,6 @@
 {
   "name": "codex-peer-review",
-  "version": "1.2.7",
+  "version": "1.3.0",
   "description": "Peer validation system using OpenAI Codex CLI. Validates Claude's designs and code reviews through structured discussion before presenting to user.",
   "author": {
     "name": "smshapiro85",

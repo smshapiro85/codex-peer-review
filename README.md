@@ -63,7 +63,7 @@ Use `/review-plan` after Claude generates an implementation plan, architecture d
 
 ### Permissions
 
-To run without confirmation prompts on every bash command, add the following to your `~/.claude/settings.json` under `permissions.allowedTools`:
+To run without confirmation prompts on every bash command, add the following to your `~/.claude/settings.json` under `permissions.allow`:
 
 ```json
 {
@@ -77,8 +77,6 @@ To run without confirmation prompts on every bash command, add the following to 
       "Bash(command -v jq*)",
       "Bash(jq *)",
       "Bash(cat /tmp/codex_*)",
-      "Bash(sleep *)",
-      "Bash(wc -l *)",
       "Bash(rm -f /tmp/codex_*)",
       "Bash(rm /tmp/codex_*)",
       "Bash(head *)",
@@ -90,7 +88,7 @@ To run without confirmation prompts on every bash command, add the following to 
 }
 ```
 
-If you already have a `permissions` block, merge the `allowedTools` array into it. These patterns are narrowly scoped to Codex CLI operations and temp files in `/tmp/codex_*` — no arbitrary shell access, no file editing, no network tools.
+If you already have a `permissions` block, merge the `allow` array into it. These patterns are narrowly scoped to Codex CLI operations and temp files in `/tmp/codex_*` — no arbitrary shell access, no file editing, no network tools.
 
 ### Data Sharing
 
