@@ -21,6 +21,7 @@ tools:
   - Bash(git show*)
   - Bash(git log*)
   - Read
+  - Write
   - TaskCreate
   - TaskUpdate
   - TaskList
@@ -91,8 +92,6 @@ Update task: `activeForm: "Running Codex review..."`
 
 **Use `codex exec` for everything else** (specific files, designs, architecture, cross-checking).
 
-**IMPORTANT:** Always use heredoc stdin for `codex exec` prompts to avoid shell escaping issues.
-
 **IMPORTANT - Content Inclusion:** Embed file contents directly in prompts rather than referencing file paths. Codex runs in full-auto mode and should not be given opportunities to read arbitrary files. Use `git diff`, `git show`, or `Read` to get content first, then paste it into the prompt.
 
 ---
@@ -106,16 +105,49 @@ Update task: `activeForm: "Running Codex review..."`
 
 ---
 
-#### Command Style: Atomic Commands with Literal Paths
+#### Command Style: Write Prompt to Temp File, Then Pipe
 
-**CRITICAL:** Every Bash tool call must be a single, simple command that starts with a recognizable keyword. This ensures commands match the allowed tool patterns and do not trigger permission prompts.
+**CRITICAL:** Heredoc commands span multiple lines, which breaks permission pattern matching. Instead, use the `Write` tool to write the prompt to a temp file, then pipe it into codex as a **single-line command**.
+
+**The pattern is always:**
+
+1. **Create a temp file for the prompt:**
+```bash
+mktemp /tmp/codex_prompt.XXXXXX.txt
+```
+
+2. **Write the prompt using the Write tool** (NOT Bash):
+```
+Write tool:
+  file_path: /tmp/codex_prompt.[path].txt
+  content: |
+    Review the following code/changes for:
+    - [Specific concern]
+    - Code quality and potential bugs
+
+    [Paste the actual code content here]
+
+    IMPORTANT: Do not use any tools. Respond with text analysis only.
+```
+
+3. **Run codex with the prompt piped from the temp file (single-line command):**
+```bash
+timeout 180 codex exec < /tmp/codex_prompt.[path].txt 2>&1 | head -c 500000
+```
+
+4. **Clean up the prompt file:**
+```bash
+rm -f /tmp/codex_prompt.[path].txt
+```
 
 **Rules:**
-1. **Run `mktemp` as a standalone command.** Read the output to get the path. Do NOT use shell variable assignment like `VAR=$(mktemp ...)`.
+1. **Run `mktemp` as a standalone command.** Read the output to get the path.
 2. **Use the literal path** from the mktemp output in all subsequent commands. Do NOT use `$VARIABLE` references.
 3. **No compound commands.** Do NOT chain commands with `&&`, `||`, or `;`. One command per Bash tool call.
-4. **No if/else blocks.** Run the check command first, read the result, then decide which command to run next in your agent logic.
-5. **No shell variable assignments.** Track all state (file paths, session IDs) in your agent context, not in bash.
+4. **No heredocs.** Always write prompts to temp files with the Write tool, then pipe with `<`.
+5. **No shell variable assignments.** Track all state (file paths) in your agent context, not in bash.
+
+**Why this matters:** The permission system matches commands from the START of the first line only. A heredoc like `timeout 180 codex exec <<'EOF'` spans multiple lines and fails pattern matching. Piping from a file keeps the command on one line: `timeout 180 codex exec < /tmp/codex_prompt.abc123.txt 2>&1 | head -c 500000`.
 
 ---
 
@@ -123,18 +155,17 @@ Update task: `activeForm: "Running Codex review..."`
 
 **CRITICAL: Do NOT use `run_in_background`.** All codex commands run in the foreground so the agent can immediately process results. Set the Bash tool timeout to `180000` (3 minutes) to allow enough time.
 
-**For `codex exec` (default):**
-```bash
-timeout 180 codex exec <<'EOF' 2>&1 | head -c 500000
-Review the following code/changes for:
-- [Specific concern from user's request]
-- Code quality and potential bugs
-- Edge cases
+**For `codex exec` (default) — full example:**
+```
+Step 1: mktemp /tmp/codex_prompt.XXXXXX.txt
+  → Output: /tmp/codex_prompt.a1b2c3.txt
 
-[Paste the actual code content here - do NOT reference file paths for Codex to read]
+Step 2: Write tool → /tmp/codex_prompt.a1b2c3.txt with the prompt content
 
-IMPORTANT: Do not use any tools. Respond with text analysis only.
-EOF
+Step 3: timeout 180 codex exec < /tmp/codex_prompt.a1b2c3.txt 2>&1 | head -c 500000
+  → Output: Codex's response (read directly from Bash result)
+
+Step 4: rm -f /tmp/codex_prompt.a1b2c3.txt
 ```
 
 The output appears directly in the Bash result. Read it and proceed to Step 3.
@@ -146,9 +177,7 @@ timeout 180 codex review --base [branch] 2>&1 | head -c 500000
 
 #### Reading Results
 
-The Codex output is returned directly from the foreground Bash call. Read it from the tool result and use it for comparison in Step 3. No temp files or summarization steps needed for the initial review.
-
-**For discussion rounds (Step 4):** Temp files are still used to extract session IDs for conversation continuity. See Step 4 for details.
+The Codex output is returned directly from the foreground Bash call. Read it from the tool result and use it for comparison in Step 3.
 
 ### Step 3: Compare Results
 
@@ -168,9 +197,11 @@ Classify the outcome:
 
 Update task: `activeForm: "Discussion round 1: Gathering evidence..."`
 
-Present Claude's position to Codex. Run in foreground (set Bash timeout to 180000):
-```bash
-timeout 180 codex exec <<'EOF' 2>&1 | head -c 500000
+Use the write-to-temp-file-then-pipe pattern:
+
+1. `mktemp /tmp/codex_prompt.XXXXXX.txt`
+2. Write tool → the temp file with:
+```
 Given this disagreement about [topic]:
 
 Claude's position: [summary with specific evidence]
@@ -184,8 +215,9 @@ Provide your evidence-based response:
 3. What specific evidence supports your position?
 
 IMPORTANT: Do not use any tools. Respond with text analysis only.
-EOF
 ```
+3. `timeout 180 codex exec < /tmp/codex_prompt.[path].txt 2>&1 | head -c 500000`
+4. `rm -f /tmp/codex_prompt.[path].txt`
 
 Read the output directly from the Bash result. Remember Codex's response for use in subsequent rounds.
 
@@ -197,9 +229,11 @@ Read the output directly from the Bash result. Remember Codex's response for use
 
 Update task: `activeForm: "Discussion round 2: Seeking resolution..."`
 
-Include both prior positions in the prompt so Codex has full context:
-```bash
-timeout 180 codex exec <<'EOF' 2>&1 | head -c 500000
+Same pattern — write prompt to temp file, pipe into codex. Include both prior positions:
+
+1. `mktemp /tmp/codex_prompt.XXXXXX.txt`
+2. Write tool → the temp file with:
+```
 Continuing a discussion about [topic].
 
 Round 1 summary:
@@ -215,8 +249,9 @@ Maintained: [what Claude still believes, with stronger reasoning]
 Can we reach synthesis? What is your final position?
 
 IMPORTANT: Do not use any tools. Respond with text analysis only.
-EOF
 ```
+3. `timeout 180 codex exec < /tmp/codex_prompt.[path].txt 2>&1 | head -c 500000`
+4. `rm -f /tmp/codex_prompt.[path].txt`
 
 **Evaluate Round 2:**
 - If resolution reached → Synthesize and go to Step 5
@@ -226,9 +261,11 @@ EOF
 
 Update task: `activeForm: "Discussion round 3: Final resolution attempt..."`
 
-Include full discussion history:
-```bash
-timeout 180 codex exec <<'EOF' 2>&1 | head -c 500000
+Same pattern with full discussion history:
+
+1. `mktemp /tmp/codex_prompt.XXXXXX.txt`
+2. Write tool → the temp file with:
+```
 Final round of discussion about [topic].
 
 Discussion so far:
@@ -246,8 +283,9 @@ This is the last round. Please provide your final position:
 2. If not, state your final position clearly.
 
 IMPORTANT: Do not use any tools. Respond with text analysis only.
-EOF
 ```
+3. `timeout 180 codex exec < /tmp/codex_prompt.[path].txt 2>&1 | head -c 500000`
+4. `rm -f /tmp/codex_prompt.[path].txt`
 
 **Evaluate Round 3:**
 - If resolution reached → Synthesize and go to Step 5
